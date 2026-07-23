@@ -1,0 +1,32 @@
+name: generate-landmarks
+
+# W1: erzeugt landmarks.json (ferne Gipfel + Soll-Skyline je Panorama-Cam).
+# Manuell, selten nötig (Cams/Gelände ändern sich kaum). Artifact herunterladen,
+# committen — Grundlage für W2 (Kalibrierung) und W3 (Sichtbarkeits-Analyse).
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: pip install numpy requests
+      - name: Generate landmarks.json
+        run: python generate_landmarks.py
+      - name: Upload landmarks.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: landmarks-json
+          path: landmarks.json
+          if-no-files-found: error

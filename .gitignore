@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.jpg
+*.png
+.DS_Store
+# landmarks.json wird bewusst committed (W2/W3 konsumieren es)

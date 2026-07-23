@@ -1,0 +1,4 @@
+# W3 (measure_visibility.py): Bild laden + Kontrast messen + HTTP
+numpy==2.2.6
+requests==2.32.3
+Pillow==11.0.0
