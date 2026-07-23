@@ -41,13 +41,18 @@ Liest die Referenzpunkte token-gesichert über `api/refpoints.php` (self-contain
 pro Cam Bild-URL + Geometrie + Pixel), misst je Punkt den Kontrast, postet das
 Ergebnis an `api/webcam-ingest.php` und pingt `api/external-heartbeat.php`.
 
-**Kontrast-Metrik:** Coefficient of Variation (std/mean) der Luminanz im Patch um
-den Referenz-Pixel — robust gegen globale Helligkeit. Sichtbar, wenn
-`>= CONTRAST_THRESHOLD`. Nacht (mittlere Bild-Luminanz `< NIGHT_LUMA`) → keine
-Messung (`quality=night`).
+**Zwei Kontrast-Metriken je Punkt-Typ** (weil ein Ort im Tal keinen Himmel als
+Hintergrund hat wie ein Gipfel):
 
-**⚠ Kalibrierung nötig:** `CONTRAST_THRESHOLD` (Default 0.035) ist der zentrale
-Tuning-Parameter und muss an echten annotierten Bildern justiert werden. Dazu:
+| Typ (`kind`) | Metrik | Schwelle | Idee |
+|---|---|---|---|
+| Gipfel (`peak`) | Weber-Kontrast Objekt-gegen-Himmel | `PEAK_CONTRAST_THRESHOLD` ≈ 0.02 | Koschmieder-Sichtweite; Gipfel verschmilzt im Dunst mit dem Himmel. Material-robust. |
+| Ort (`c/t/v`), `manual` | lokaler Detailkontrast (std/mittel) | `PLACE_CONTRAST_THRESHOLD` ≈ 0.03 | „erkenne ich noch Struktur?"; Dunst glättet den Ort zum grauen Fleck. |
+
+Nacht (mittlere Bild-Luminanz `< NIGHT_LUMA`) → keine Messung (`quality=night`).
+
+**⚠ Kalibrierung nötig:** beide Schwellen an echten annotierten Bildern justieren.
+`detail[]` enthält je Punkt `method`, `contrast` und `threshold`. Dazu:
 
 ```bash
 # lokal, mit gesetzten Env-Vars — misst + druckt je Punkt den Rohkontrast, ohne zu posten
@@ -66,8 +71,8 @@ im Admin nach echten Läufen auswertbar.
 | `HEARTBEAT_URL` | `https://tool.wetteralarm.ch/weitsicht/stage/api/external-heartbeat.php` |
 | `WEBCAM_INGEST_TOKEN` | langer Zufallswert, **identisch** zu `WEBCAM_INGEST_TOKEN` in der Weitsicht-.env |
 
-Optionale Tuning-**Variables** (nicht Secrets): `CONTRAST_THRESHOLD`,
-`PATCH_RADIUS_PX`, `NIGHT_LUMA`.
+Optionale Tuning-**Variables** (nicht Secrets): `PEAK_CONTRAST_THRESHOLD`,
+`PLACE_CONTRAST_THRESHOLD`, `PATCH_RADIUS_PX`, `NIGHT_LUMA`.
 
 ### Auslösung
 

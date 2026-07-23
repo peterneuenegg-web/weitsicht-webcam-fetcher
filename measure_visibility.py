@@ -4,30 +4,37 @@ W3 — Sichtbarkeits-Messung an Panorama-Livecams.
 
 Liest die im Weitsicht-Admin (admin/calibrate.php) gesetzten Referenzpunkte
 (Gipfel/Orte in bekannter Distanz, mit Bild-Pixel x/y) über api/refpoints.php,
-holt pro Cam das aktuelle Panorama und prüft an jedem Referenz-Pixel den lokalen
-Kontrast. Ein Punkt gilt als sichtbar, wenn der Kontrast über der Schwelle liegt
-(ferner Gipfel/Ort gegen Dunst verschwindet = niedriger Kontrast). Die Distanz
-des FERNSTEN noch sichtbaren Punkts ist die gemessene Mindest-Fernsicht.
+holt pro Cam das aktuelle Panorama und prüft an jedem Referenz-Pixel den
+Kontrast. Die Distanz des FERNSTEN noch sichtbaren Punkts ist die gemessene
+Mindest-Fernsicht.
+
+ZWEI METRIKEN je Punkt-Typ (kind), weil ein Ort im Tal keinen Himmel-Hintergrund
+hat wie ein Gipfel:
+  - GIPFEL (kind=peak): Weber-Kontrast Objekt-gegen-Himmel — Gipfel gegen den
+    Himmel direkt darüber. Entspricht der meteorologischen Sichtweite
+    (Koschmieder), Sichtgrenze ~0.02. Material-robust (Fels wie Schnee).
+  - ORTE (kind=c/t/v) + manuell: lokaler Detailkontrast (std/mittel im Patch) —
+    „erkenne ich noch Struktur?"; Dunst glättet den Ort zum grauen Fleck.
+Entsprechend zwei Schwellen: PEAK_CONTRAST_THRESHOLD / PLACE_CONTRAST_THRESHOLD.
 
 Ergebnis je Cam → POST an api/webcam-ingest.php (Tabelle fernsicht_observed).
 
 Manueller Ansatz statt Skyline-Matching (W1/W2 verworfen): der Mensch markiert
 im Bild nur real anvisierbare, sichtbare Punkte — keine Horizont-/Offset-/
-Verdeckungs-Probleme mehr. Diese Datei ersetzt die W1-Landmark-Pipeline als
-laufenden Schritt; generate_landmarks.py bleibt nur als Geometrie-Referenz.
+Verdeckungs-Probleme mehr. generate_landmarks.py bleibt nur Geometrie-Referenz.
 
-WICHTIG — Kalibrierung: die Kontrast-Schwelle (CONTRAST_THRESHOLD) ist der
-zentrale Tuning-Parameter und MUSS an echten annotierten Bildern kalibriert
-werden. Dazu `--dry-run --cam <id>` nutzen: druckt je Punkt den rohen Kontrast,
-ohne zu posten. Der Rohwert wird zusätzlich in `detail` mitgeschrieben.
+WICHTIG — Kalibrierung: die Schwellen an echten annotierten Bildern justieren.
+Dazu `--dry-run --cam <id>`: druckt je Punkt Metrik + Rohkontrast + Schwelle,
+ohne zu posten. Rohwert, method und threshold stehen auch in `detail`.
 
 Env:
-  REFPOINTS_URL        z.B. https://tool.wetteralarm.ch/weitsicht/stage/api/refpoints.php
-  INGEST_URL           z.B. https://tool.wetteralarm.ch/weitsicht/stage/api/webcam-ingest.php
-  WEBCAM_INGEST_TOKEN  Token (X-Ingest-Token) — matcht WEBCAM_INGEST_TOKEN der Weitsicht-.env
-  CONTRAST_THRESHOLD   Default 0.035 (Coefficient of Variation der Luminanz im Patch)
-  PATCH_RADIUS_PX      Default 8 (halbe Fensterkante in Pixel)
-  NIGHT_LUMA           Default 35 (mittlere Bild-Luminanz darunter → quality=night, keine Messung)
+  REFPOINTS_URL            https://tool.wetteralarm.ch/weitsicht/stage/api/refpoints.php
+  INGEST_URL               https://tool.wetteralarm.ch/weitsicht/stage/api/webcam-ingest.php
+  WEBCAM_INGEST_TOKEN      X-Ingest-Token — matcht WEBCAM_INGEST_TOKEN der Weitsicht-.env
+  PEAK_CONTRAST_THRESHOLD  Default 0.02 (Gipfel, Weber-Kontrast; Fallback: CONTRAST_THRESHOLD)
+  PLACE_CONTRAST_THRESHOLD Default 0.03 (Orte, lokaler Detailkontrast)
+  PATCH_RADIUS_PX          Default 8 (halbe Fensterkante in Pixel)
+  NIGHT_LUMA               Default 35 (mittlere Bild-Luminanz darunter → quality=night)
 """
 from __future__ import annotations
 
@@ -60,10 +67,15 @@ INGEST_URL    = _env("INGEST_URL", "")
 HEARTBEAT_URL = _env("HEARTBEAT_URL", "")   # optional: api/external-heartbeat.php
 TOKEN         = _env("WEBCAM_INGEST_TOKEN", "")
 
-CONTRAST_THRESHOLD = float(_env("CONTRAST_THRESHOLD", "0.035"))
-PATCH_RADIUS_PX    = int(_env("PATCH_RADIUS_PX", "8"))
-NIGHT_LUMA         = float(_env("NIGHT_LUMA", "35"))
-HTTP_TIMEOUT       = int(_env("HTTP_TIMEOUT", "45"))
+# Zwei Schwellen, weil zwei Metriken (siehe measure_cam):
+#  - Gipfel: Weber-Kontrast Objekt-gegen-Himmel → Koschmieder-Sichtgrenze ~0.02
+#  - Orte:   lokaler Detailkontrast (std/mittel) → eigener, empirischer Wert
+# PEAK_CONTRAST_THRESHOLD fällt auf das alte CONTRAST_THRESHOLD zurück (Kompat).
+PEAK_THRESHOLD  = float(_env("PEAK_CONTRAST_THRESHOLD",  _env("CONTRAST_THRESHOLD", "0.02")))
+PLACE_THRESHOLD = float(_env("PLACE_CONTRAST_THRESHOLD", "0.03"))
+PATCH_RADIUS_PX = int(_env("PATCH_RADIUS_PX", "8"))
+NIGHT_LUMA      = float(_env("NIGHT_LUMA", "35"))
+HTTP_TIMEOUT    = int(_env("HTTP_TIMEOUT", "45"))
 
 # Roundshot-Bild-URLs leiten (302) auf storage.roundshot.com/.../<datum>/<zeit>/…
 _TS_RE = re.compile(r"(20\d\d)[-_/](\d\d)[-_/](\d\d)[-_/T ](\d\d)[-_h](\d\d)")
@@ -101,13 +113,19 @@ def download_gray(url: str):
     return np.asarray(img, dtype=np.float32), observed_at
 
 
-def local_contrast(gray: np.ndarray, xf: float, yf: float, radius: int) -> float:
-    """Coefficient of Variation (std/mean) der Luminanz im Patch um (xf,yf).
-    Dunst senkt den lokalen Kontrast — ferner Gipfel/Ort gegen Himmel = hoher CoV,
-    im Dunst verschluckt = niedriger CoV. Robust gegen globale Helligkeit."""
+def _pix(gray: np.ndarray, xf: float, yf: float):
     h, w = gray.shape
     px = min(max(int(round(xf * (w - 1))), 0), w - 1)
     py = min(max(int(round(yf * (h - 1))), 0), h - 1)
+    return px, py, w, h
+
+
+def local_contrast(gray: np.ndarray, xf: float, yf: float, radius: int) -> float:
+    """ORTE: Coefficient of Variation (std/mean) der Luminanz im Patch um (xf,yf).
+    Ein ferner Ort im Tal hat KEINEN Himmel als Hintergrund — Sichtbarkeit heisst
+    hier: erkenne ich noch Struktur/Detail? Dunst glättet den Ort zum grauen Fleck
+    → niedriger CoV. Robust gegen globale Helligkeit (Normierung auf den Mittelwert)."""
+    px, py, w, h = _pix(gray, xf, yf)
     x0, x1 = max(px - radius, 0), min(px + radius + 1, w)
     y0, y1 = max(py - radius, 0), min(py + radius + 1, h)
     patch = gray[y0:y1, x0:x1]
@@ -117,6 +135,26 @@ def local_contrast(gray: np.ndarray, xf: float, yf: float, radius: int) -> float
     if mean < 1e-3:
         return 0.0
     return float(patch.std() / mean)
+
+
+def sky_contrast(gray: np.ndarray, xf: float, yf: float, radius: int) -> float:
+    """GIPFEL: Weber-Kontrast Objekt-gegen-Himmel |L_obj - L_sky| / L_sky.
+    L_sky = Patch knapp OBERHALB des Punkts (Himmel), L_obj = knapp UNTERHALB
+    (Gipfel). Entspricht der meteorologischen Sichtweite (Koschmieder): der
+    Kontrast geht gegen 0, wenn der Gipfel im Dunst mit dem Himmel verschmilzt;
+    Sichtgrenze bei ~0.02. Voraussetzung: Punkt sitzt auf der Silhouetten-Kante
+    (Gipfel gegen Himmel). Material-robust — funktioniert für Fels wie Schnee."""
+    px, py, w, h = _pix(gray, xf, yf)
+    x0, x1 = max(px - radius, 0), min(px + radius + 1, w)
+    sky = gray[max(py - 2 * radius, 0):py, x0:x1]          # oberhalb = Himmel
+    obj = gray[py:min(py + 2 * radius + 1, h), x0:x1]      # unterhalb = Gipfel
+    if sky.size == 0 or obj.size == 0:
+        return 0.0
+    l_sky = float(sky.mean())
+    l_obj = float(obj.mean())
+    if l_sky < 1e-3:
+        return 0.0
+    return abs(l_obj - l_sky) / l_sky
 
 
 def measure_cam(cam: dict) -> dict | None:
@@ -148,13 +186,19 @@ def measure_cam(cam: dict) -> dict | None:
     for p in points:
         dist_km = int(p.get("dist_km") or 0)
         all_dists.append(dist_km)
-        c = local_contrast(gray, float(p.get("x", 0)), float(p.get("y", 0)), PATCH_RADIUS_PX)
-        vis = (not night) and (c >= CONTRAST_THRESHOLD)
+        xf, yf = float(p.get("x", 0)), float(p.get("y", 0))
+        # Metrik nach Punkt-Typ: Gipfel = Objekt-gegen-Himmel, sonst lokaler Detailkontrast.
+        # 'manual' ohne Himmelsannahme → lokal (sicherer Default).
+        if p.get("kind") == "peak":
+            c, method, thr = sky_contrast(gray, xf, yf, PATCH_RADIUS_PX), "sky", PEAK_THRESHOLD
+        else:
+            c, method, thr = local_contrast(gray, xf, yf, PATCH_RADIUS_PX), "local", PLACE_THRESHOLD
+        vis = (not night) and (c >= thr)
         if vis:
             visible_dists.append(dist_km)
         detail.append({
-            "name": p.get("name"), "dist_km": dist_km,
-            "contrast": round(c, 4), "visible": bool(vis),
+            "name": p.get("name"), "dist_km": dist_km, "method": method,
+            "contrast": round(c, 4), "threshold": thr, "visible": bool(vis),
         })
 
     return {
@@ -226,9 +270,9 @@ def main() -> int:
         cams = [c for c in cams if c.get("id") == args.cam]
     if args.limit > 0:
         cams = cams[:args.limit]
-    log.info("Refpoints-Stand %s — %d Cams, %d Punkte (Schwelle=%.3f, Patch=%dpx)",
+    log.info("Refpoints-Stand %s — %d Cams, %d Punkte (Schwelle Gipfel=%.3f / Orte=%.3f, Patch=%dpx)",
              data.get("updated_at"), len(cams), data.get("point_count", 0),
-             CONTRAST_THRESHOLD, PATCH_RADIUS_PX)
+             PEAK_THRESHOLD, PLACE_THRESHOLD, PATCH_RADIUS_PX)
 
     observations = []
     for cam in cams:
@@ -243,7 +287,9 @@ def main() -> int:
         if args.dry_run:
             for d in obs["detail"]:
                 flag = "✓" if d["visible"] else "·"
-                log.info("      %s %-24s %4d km  contrast=%.4f", flag, str(d["name"])[:24], d["dist_km"], d["contrast"])
+                log.info("      %s %-24s %4d km  %-5s contrast=%.4f (>=%.3f)",
+                         flag, str(d["name"])[:24], d["dist_km"],
+                         d.get("method", ""), d["contrast"], d.get("threshold", 0))
 
     if not observations:
         log.warning("Keine messbaren Cams (keine Referenzpunkte gesetzt?).")

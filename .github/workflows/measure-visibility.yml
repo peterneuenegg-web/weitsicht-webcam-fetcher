@@ -54,7 +54,8 @@ jobs:
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
           WEBCAM_INGEST_TOKEN: ${{ secrets.WEBCAM_INGEST_TOKEN }}
           # Optionale Tuning-Overrides (sonst Defaults im Script):
-          CONTRAST_THRESHOLD: ${{ vars.CONTRAST_THRESHOLD }}
+          PEAK_CONTRAST_THRESHOLD: ${{ vars.PEAK_CONTRAST_THRESHOLD }}
+          PLACE_CONTRAST_THRESHOLD: ${{ vars.PLACE_CONTRAST_THRESHOLD }}
           PATCH_RADIUS_PX: ${{ vars.PATCH_RADIUS_PX }}
           NIGHT_LUMA: ${{ vars.NIGHT_LUMA }}
           # workflow_dispatch-Inputs (bei schedule leer → normaler Voll-Lauf).
