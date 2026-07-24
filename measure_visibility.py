@@ -17,6 +17,10 @@ hat wie ein Gipfel:
     „erkenne ich noch Struktur?"; Dunst glättet den Ort zum grauen Fleck.
 Entsprechend zwei Schwellen: PEAK_CONTRAST_THRESHOLD / PLACE_CONTRAST_THRESHOLD.
 
+ZWEITES SIGNAL (sky_clarity 0–100): aus dem Horizont-Himmel (oberes Bildband,
+360°-Mittel) — sattes Blau = klar, grau/weiss = Dunst. Braucht keine Punkte, gilt
+für alle Cams; misst den Dunst-Zustand statt km (siehe sky_clarity()).
+
 Ergebnis je Cam → POST an api/webcam-ingest.php (Tabelle fernsicht_observed).
 
 Manueller Ansatz statt Skyline-Matching (W1/W2 verworfen): der Mensch markiert
@@ -97,8 +101,8 @@ def fetch_refpoints() -> dict:
     return r.json()
 
 
-def download_gray(url: str):
-    """Panorama laden → (Graustufen-Array float32 [H,W], observed_at-ISO|None)."""
+def download_image(url: str):
+    """Panorama laden → (RGB-Array float32 [H,W,3], observed_at|None)."""
     r = requests.get(url, timeout=HTTP_TIMEOUT, stream=True)
     r.raise_for_status()
     observed_at = None
@@ -109,8 +113,37 @@ def download_gray(url: str):
             observed_at = datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
         except ValueError:
             observed_at = None
-    img = Image.open(io.BytesIO(r.content)).convert("L")
+    img = Image.open(io.BytesIO(r.content)).convert("RGB")
     return np.asarray(img, dtype=np.float32), observed_at
+
+
+# Luminanz-Gewichte (Rec. 601) für die Graustufen-Ableitung aus RGB.
+_LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+def sky_clarity(rgb: np.ndarray):
+    """Himmel-Klarheits-Index 0..100 aus dem Horizont-Himmel (oberes Bildband,
+    über die volle 360°-Breite gemittelt → gleicht Sonnen-/Gegenrichtung aus).
+    Sattes Blau (Rayleigh, klare Luft) → hoch; grau/weiss (Mie-Luftlicht durch
+    Dunst/Nebel) → tief. Median gegen einzelne Gipfel/Wolken im Band robust.
+
+    ZWEITES, unabhängiges Signal neben der Landmarken-Sicht: misst den
+    atmosphärischen Dunst-Zustand, nicht km. Verwechselt hohe Bewölkung mit Dunst
+    (grauer Himmel) — das löst erst die Kombination mit den Landmarken auf.
+    Rückgabe: (index|None, metrics). None bei zu dunkel (Nacht/Dämmerung)."""
+    h, w, _ = rgb.shape
+    band = rgb[0:max(1, int(h * 0.30)), :, :]          # oberes 30% = Himmel
+    r = float(np.median(band[:, :, 0]))
+    g = float(np.median(band[:, :, 1]))
+    b = float(np.median(band[:, :, 2]))
+    mx, mn = max(r, g, b), min(r, g, b)
+    bright = mx / 255.0
+    if bright < 0.12:                                  # zu dunkel → keine Aussage
+        return None, {"sat": 0.0, "blue": 0.0, "bright": round(bright, 3)}
+    sat = (mx - mn) / mx if mx > 0 else 0.0            # HSV-Sättigung 0..1
+    blue = max(0.0, (b - r)) / 255.0                   # Blau-Überschuss 0..1
+    idx = int(round(100.0 * min(1.0, 0.6 * sat + 1.4 * blue)))  # provisorisch, zu kalibrieren
+    return idx, {"sat": round(sat, 3), "blue": round(blue, 3), "bright": round(bright, 3)}
 
 
 def _pix(gray: np.ndarray, xf: float, yf: float):
@@ -165,7 +198,7 @@ def measure_cam(cam: dict) -> dict | None:
         return None
 
     try:
-        gray, observed_at = download_gray(image)
+        rgb, observed_at = download_image(image)
     except Exception as e:  # noqa: BLE001
         log.warning("Cam %s: Bild-Download/Decode fehlgeschlagen: %s", cam_id, e)
         return {
@@ -174,13 +207,16 @@ def measure_cam(cam: dict) -> dict | None:
             "measured_km": None, "max_ref_km": None,
             "visible_count": 0, "total_count": len(points),
             "band": band_for_alt(cam.get("alt")), "quality": "error", "detail": [],
+            "sky_clarity": None, "sky_metrics": None,
         }
 
+    gray = rgb @ _LUMA                       # Luminanz für die Kontrast-Metriken
     if observed_at is None:
         observed_at = datetime.now(timezone.utc)
 
     mean_luma = float(gray.mean())
     night = mean_luma < NIGHT_LUMA
+    sky_idx, sky_m = sky_clarity(rgb)        # zweites Signal: Himmel-Klarheit
 
     detail, visible_dists, all_dists = [], [], []
     for p in points:
@@ -211,6 +247,8 @@ def measure_cam(cam: dict) -> dict | None:
         "band": band_for_alt(cam.get("alt")),
         "quality": ("night" if night else "ok"),
         "detail": detail,
+        "sky_clarity": sky_idx,
+        "sky_metrics": sky_m,
     }
 
 
@@ -281,9 +319,15 @@ def main() -> int:
             continue
         observations.append(obs)
         vd = obs["measured_km"]
-        log.info("  %-28s %s  sichtbar %d/%d  → gemessen %s km  [%s]",
+        sky = obs.get("sky_clarity")
+        log.info("  %-28s %s  sichtbar %d/%d  → gemessen %s km  Himmel=%s  [%s]",
                  obs["cam_id"], obs["observed_at"], obs["visible_count"], obs["total_count"],
-                 (vd if vd is not None else "—"), obs["quality"])
+                 (vd if vd is not None else "—"),
+                 (str(sky) if sky is not None else "—"), obs["quality"])
+        if args.dry_run and obs.get("sky_metrics"):
+            m = obs["sky_metrics"]
+            log.info("      Himmel: Klarheit=%s  sat=%.3f blue=%.3f bright=%.3f",
+                     (sky if sky is not None else "—"), m.get("sat", 0), m.get("blue", 0), m.get("bright", 0))
         if args.dry_run:
             for d in obs["detail"]:
                 flag = "✓" if d["visible"] else "·"

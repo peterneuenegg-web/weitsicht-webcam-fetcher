@@ -51,6 +51,14 @@ Hintergrund hat wie ein Gipfel):
 
 Nacht (mittlere Bild-Luminanz `< NIGHT_LUMA`) → keine Messung (`quality=night`).
 
+**Zweites, unabhängiges Signal — Himmel-Klarheit (`sky_clarity` 0–100):** aus dem
+Horizont-Himmel (oberes Bildband, über 360° gemittelt). Sattes Blau (Rayleigh,
+klare Luft) → hoch; grau/weiss (Mie-Luftlicht durch Dunst/Nebel) → tief. Braucht
+**keine Referenzpunkte** → für alle Cams verfügbar. Misst den Dunst-Zustand, nicht
+km, und verwechselt hohe Bewölkung mit Dunst — das löst erst die Kombination mit
+der Landmarken-Sicht auf (Landmarken scharf + Himmel grau = Wolken, nicht Dunst).
+Rohwerte (`sat`/`blue`/`bright`) stehen in `sky_metrics` zum Kalibrieren.
+
 **⚠ Kalibrierung nötig:** beide Schwellen an echten annotierten Bildern justieren.
 `detail[]` enthält je Punkt `method`, `contrast` und `threshold`. Dazu:
 
