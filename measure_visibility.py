@@ -218,10 +218,10 @@ def measure_cam(cam: dict) -> dict | None:
     night = mean_luma < NIGHT_LUMA
     sky_idx, sky_m = sky_clarity(rgb)        # zweites Signal: Himmel-Klarheit
 
-    detail, visible_dists, all_dists = [], [], []
+    # 1. Pass: Kontrast + Eigen-Sichtbarkeit je Punkt (absolute Schwelle).
+    pts = []
     for p in points:
         dist_km = int(p.get("dist_km") or 0)
-        all_dists.append(dist_km)
         xf, yf = float(p.get("x", 0)), float(p.get("y", 0))
         # Metrik nach Punkt-Typ: Gipfel = Objekt-gegen-Himmel, sonst lokaler Detailkontrast.
         # 'manual' ohne Himmelsannahme → lokal (sicherer Default).
@@ -229,12 +229,27 @@ def measure_cam(cam: dict) -> dict | None:
             c, method, thr = sky_contrast(gray, xf, yf, PATCH_RADIUS_PX), "sky", PEAK_THRESHOLD
         else:
             c, method, thr = local_contrast(gray, xf, yf, PATCH_RADIUS_PX), "local", PLACE_THRESHOLD
-        vis = (not night) and (c >= thr)
-        if vis:
-            visible_dists.append(dist_km)
+        own_vis = (not night) and (c >= thr)
+        pts.append({"name": p.get("name"), "dist_km": dist_km, "method": method,
+                    "contrast": round(c, 4), "threshold": thr, "own_vis": own_vis})
+
+    # Fernste Distanz mit eigener Sichtbarkeit.
+    max_vis = max((q["dist_km"] for q in pts if q["own_vis"]), default=0)
+
+    # 2. Pass: Monotonie-Korrektur. Sichtweite ist monoton — wer X km weit sieht,
+    # sieht garantiert alles Nähere. Ein näherer Punkt mit künstlich niedrigem
+    # Kontrast (Berg statt Himmel dahinter, Schnee) gilt daher als sichtbar, wenn
+    # ein WEITERER Punkt sichtbar ist. Hebt measured_km NICHT an (nur ≤ max_vis).
+    detail, visible_dists, all_dists = [], [], []
+    for q in pts:
+        all_dists.append(q["dist_km"])
+        eff = q["own_vis"] or (max_vis > 0 and q["dist_km"] <= max_vis)
+        if eff:
+            visible_dists.append(q["dist_km"])
         detail.append({
-            "name": p.get("name"), "dist_km": dist_km, "method": method,
-            "contrast": round(c, 4), "threshold": thr, "visible": bool(vis),
+            "name": q["name"], "dist_km": q["dist_km"], "method": q["method"],
+            "contrast": q["contrast"], "threshold": q["threshold"],
+            "visible": bool(eff), "mono": bool(eff and not q["own_vis"]),
         })
 
     return {
@@ -330,7 +345,7 @@ def main() -> int:
                      (sky if sky is not None else "—"), m.get("sat", 0), m.get("blue", 0), m.get("bright", 0))
         if args.dry_run:
             for d in obs["detail"]:
-                flag = "✓" if d["visible"] else "·"
+                flag = ("✓M" if d.get("mono") else "✓ ") if d["visible"] else "· "
                 log.info("      %s %-24s %4d km  %-5s contrast=%.4f (>=%.3f)",
                          flag, str(d["name"])[:24], d["dist_km"],
                          d.get("method", ""), d["contrast"], d.get("threshold", 0))
