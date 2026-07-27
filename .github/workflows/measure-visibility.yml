@@ -58,6 +58,7 @@ jobs:
           PLACE_CONTRAST_THRESHOLD: ${{ vars.PLACE_CONTRAST_THRESHOLD }}
           VISIBLE_FRACTION: ${{ vars.VISIBLE_FRACTION }}
           BASELINE_MIN_SAMPLES: ${{ vars.BASELINE_MIN_SAMPLES }}
+          MONO_FLOOR: ${{ vars.MONO_FLOOR }}
           PATCH_RADIUS_PX: ${{ vars.PATCH_RADIUS_PX }}
           NIGHT_LUMA: ${{ vars.NIGHT_LUMA }}
           # workflow_dispatch-Inputs (bei schedule leer → normaler Voll-Lauf).

@@ -68,6 +68,11 @@ zur Skyline). `sky_metrics.frac` = erkannter Himmel-Anteil (Reliabilität); Rohw
 - **Monotonie:** Sichtweite ist monoton — wer X km weit sieht, sieht alles Nähere.
   Ein näherer Punkt mit künstlich niedrigem Kontrast gilt als sichtbar, wenn ein
   weiter entfernter sichtbar ist (hebt `measured_km` nicht an; `detail[].mono`).
+  **Veto:** unterhalb `MONO_FLOOR` (Default 0.012) greift das nicht — dort ist real
+  nichts zu sehen (Wolke davor, Verdeckung), das ist kein Dunst-Effekt.
+- **Flacher Messpatch** bei Gipfeln: vertikal nur `radius/2` dicht an der Silhouetten-
+  Kante (Kantenzeile übersprungen), damit ein Gipfel, der knapp über näheres Gelände
+  ragt, nicht den Vordergrund mitmisst.
 - **Selbstkalibrierende Baseline** (Migration 009): pro Punkt wird die Klarluft-
   Referenz (rollierendes Kontrast-Hoch) gelernt; sichtbar = Kontrast ≥
   `VISIBLE_FRACTION` (Default 0.4) der Baseline, sobald `BASELINE_MIN_SAMPLES`

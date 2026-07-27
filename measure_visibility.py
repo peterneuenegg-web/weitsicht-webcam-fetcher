@@ -83,6 +83,9 @@ PLACE_THRESHOLD = float(_env("PLACE_CONTRAST_THRESHOLD", "0.03"))
 VISIBLE_FRACTION     = float(_env("VISIBLE_FRACTION", "0.4"))
 BASELINE_MIN_SAMPLES = int(_env("BASELINE_MIN_SAMPLES", "3"))
 BASELINE_FLOOR       = 0.005   # absoluter Mindestkontrast, egal wie tief die Baseline
+# Unterhalb dieses Kontrasts ist an der Stelle real nichts zu sehen (Wolke davor,
+# Verdeckung) — dann greift die Monotonie-Korrektur NICHT (siehe measure_cam).
+MONO_FLOOR           = float(_env("MONO_FLOOR", "0.012"))
 PATCH_RADIUS_PX = int(_env("PATCH_RADIUS_PX", "8"))
 NIGHT_LUMA      = float(_env("NIGHT_LUMA", "35"))
 HTTP_TIMEOUT    = int(_env("HTTP_TIMEOUT", "45"))
@@ -220,8 +223,12 @@ def sky_contrast(gray: np.ndarray, xf: float, yf: float, radius: int) -> float:
     (Gipfel gegen Himmel). Material-robust — funktioniert für Fels wie Schnee."""
     px, py, w, h = _pix(gray, xf, yf)
     x0, x1 = max(px - radius, 0), min(px + radius + 1, w)
-    sky = gray[max(py - 2 * radius, 0):py, x0:x1]          # oberhalb = Himmel
-    obj = gray[py:min(py + 2 * radius + 1, h), x0:x1]      # unterhalb = Gipfel
+    # Vertikal FLACH und dicht an der Kante messen: ein hoher Patch würde bei einem
+    # Gipfel, der nur knapp über näheres Gelände ragt, den Vordergrund mitmischen
+    # (→ falsch hoher Kontrast). Die Kantenzeile selbst (Mischpixel) wird übersprungen.
+    vr = max(2, radius // 2)
+    sky = gray[max(py - vr, 0):py, x0:x1]                    # oberhalb = Himmel
+    obj = gray[py + 1:min(py + vr + 1, h), x0:x1]            # unterhalb = Gipfel
     if sky.size == 0 or obj.size == 0:
         return 0.0
     l_sky = float(sky.mean())
@@ -291,10 +298,16 @@ def measure_cam(cam: dict) -> dict | None:
     # sieht garantiert alles Nähere. Ein näherer Punkt mit künstlich niedrigem
     # Kontrast (Berg statt Himmel dahinter, Schnee) gilt daher als sichtbar, wenn
     # ein WEITERER Punkt sichtbar ist. Hebt measured_km NICHT an (nur ≤ max_vis).
+    #
+    # VETO: Monotonie gilt nur für DUNST (horizontale Sichttrübung), nicht für
+    # Wolken/Verdeckung. Ist an der Stelle praktisch kein Kontrast messbar
+    # (< MONO_FLOOR), steht dort real eine Wolke oder näheres Gelände davor — so
+    # ein Punkt wird NICHT gerettet, sonst melden wir Sicht, die es nicht gibt.
     detail, visible_dists, all_dists = [], [], []
     for q in pts:
         all_dists.append(q["dist_km"])
-        eff = q["own_vis"] or (max_vis > 0 and q["dist_km"] <= max_vis)
+        mono_ok = (max_vis > 0 and q["dist_km"] <= max_vis and q["contrast"] >= MONO_FLOOR)
+        eff = q["own_vis"] or mono_ok
         if eff:
             visible_dists.append(q["dist_km"])
         detail.append({
