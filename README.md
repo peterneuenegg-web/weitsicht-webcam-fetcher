@@ -59,6 +59,17 @@ km, und verwechselt hohe Bewölkung mit Dunst — das löst erst die Kombination
 der Landmarken-Sicht auf (Landmarken scharf + Himmel grau = Wolken, nicht Dunst).
 Rohwerte (`sat`/`blue`/`bright`) stehen in `sky_metrics` zum Kalibrieren.
 
+**Robustheit gegen variablen Ziel-Kontrast** (Schnee, Berg-statt-Himmel-Hintergrund):
+- **Monotonie:** Sichtweite ist monoton — wer X km weit sieht, sieht alles Nähere.
+  Ein näherer Punkt mit künstlich niedrigem Kontrast gilt als sichtbar, wenn ein
+  weiter entfernter sichtbar ist (hebt `measured_km` nicht an; `detail[].mono`).
+- **Selbstkalibrierende Baseline** (Migration 009): pro Punkt wird die Klarluft-
+  Referenz (rollierendes Kontrast-Hoch) gelernt; sichtbar = Kontrast ≥
+  `VISIBLE_FRACTION` (Default 0.4) der Baseline, sobald `BASELINE_MIN_SAMPLES`
+  (Default 3) Messungen vorliegen — davor absolute Schwelle. `api/refpoints.php`
+  liefert die Baseline, `webcam-ingest.php` zieht sie nach. `detail[].vis_mode` =
+  `rel`/`abs`, `detail[].baseline` zeigt den Referenzwert.
+
 **⚠ Kalibrierung nötig:** beide Schwellen an echten annotierten Bildern justieren.
 `detail[]` enthält je Punkt `method`, `contrast` und `threshold`. Dazu:
 

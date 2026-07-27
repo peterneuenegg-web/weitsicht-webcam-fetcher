@@ -77,6 +77,12 @@ TOKEN         = _env("WEBCAM_INGEST_TOKEN", "")
 # PEAK_CONTRAST_THRESHOLD fällt auf das alte CONTRAST_THRESHOLD zurück (Kompat).
 PEAK_THRESHOLD  = float(_env("PEAK_CONTRAST_THRESHOLD",  _env("CONTRAST_THRESHOLD", "0.02")))
 PLACE_THRESHOLD = float(_env("PLACE_CONTRAST_THRESHOLD", "0.03"))
+# Selbstkalibrierende Baseline (Migration 009): sichtbar, wenn der Kontrast >=
+# VISIBLE_FRACTION der Klarluft-Referenz des Punkts ist — sobald genug Messungen
+# (>= BASELINE_MIN_SAMPLES) vorliegen; davor Fallback auf die absolute Schwelle.
+VISIBLE_FRACTION     = float(_env("VISIBLE_FRACTION", "0.4"))
+BASELINE_MIN_SAMPLES = int(_env("BASELINE_MIN_SAMPLES", "3"))
+BASELINE_FLOOR       = 0.005   # absoluter Mindestkontrast, egal wie tief die Baseline
 PATCH_RADIUS_PX = int(_env("PATCH_RADIUS_PX", "8"))
 NIGHT_LUMA      = float(_env("NIGHT_LUMA", "35"))
 HTTP_TIMEOUT    = int(_env("HTTP_TIMEOUT", "45"))
@@ -229,9 +235,19 @@ def measure_cam(cam: dict) -> dict | None:
             c, method, thr = sky_contrast(gray, xf, yf, PATCH_RADIUS_PX), "sky", PEAK_THRESHOLD
         else:
             c, method, thr = local_contrast(gray, xf, yf, PATCH_RADIUS_PX), "local", PLACE_THRESHOLD
-        own_vis = (not night) and (c >= thr)
+        # Relativ zur eigenen Klarluft-Referenz, sobald genug Baseline-Messungen da
+        # sind (löst Schnee/terrain-hinterlegte Ziele); sonst absolute Schwelle.
+        base = p.get("baseline")
+        bsamp = p.get("baseline_samples") or 0
+        if base and base > 0 and bsamp >= BASELINE_MIN_SAMPLES:
+            thr_used, vmode = max(BASELINE_FLOOR, VISIBLE_FRACTION * float(base)), "rel"
+        else:
+            thr_used, vmode = thr, "abs"
+        own_vis = (not night) and (c >= thr_used)
         pts.append({"name": p.get("name"), "dist_km": dist_km, "method": method,
-                    "contrast": round(c, 4), "threshold": thr, "own_vis": own_vis})
+                    "contrast": round(c, 4), "threshold": round(thr_used, 4),
+                    "baseline": (round(float(base), 4) if base else None), "mode": vmode,
+                    "own_vis": own_vis})
 
     # Fernste Distanz mit eigener Sichtbarkeit.
     max_vis = max((q["dist_km"] for q in pts if q["own_vis"]), default=0)
@@ -249,6 +265,7 @@ def measure_cam(cam: dict) -> dict | None:
         detail.append({
             "name": q["name"], "dist_km": q["dist_km"], "method": q["method"],
             "contrast": q["contrast"], "threshold": q["threshold"],
+            "baseline": q["baseline"], "vis_mode": q["mode"],
             "visible": bool(eff), "mono": bool(eff and not q["own_vis"]),
         })
 
@@ -346,9 +363,10 @@ def main() -> int:
         if args.dry_run:
             for d in obs["detail"]:
                 flag = ("✓M" if d.get("mono") else "✓ ") if d["visible"] else "· "
-                log.info("      %s %-24s %4d km  %-5s contrast=%.4f (>=%.3f)",
-                         flag, str(d["name"])[:24], d["dist_km"],
-                         d.get("method", ""), d["contrast"], d.get("threshold", 0))
+                base = (" base=%.3f" % d["baseline"]) if d.get("baseline") else ""
+                log.info("      %s %-24s %4d km  %-5s c=%.4f (>=%.3f %s%s)",
+                         flag, str(d["name"])[:24], d["dist_km"], d.get("method", ""),
+                         d["contrast"], d.get("threshold", 0), d.get("vis_mode", ""), base)
 
     if not observations:
         log.warning("Keine messbaren Cams (keine Referenzpunkte gesetzt?).")
