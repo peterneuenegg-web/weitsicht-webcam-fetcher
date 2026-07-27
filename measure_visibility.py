@@ -128,28 +128,53 @@ _LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
 
 def sky_clarity(rgb: np.ndarray):
-    """Himmel-Klarheits-Index 0..100 aus dem Horizont-Himmel (oberes Bildband,
-    über die volle 360°-Breite gemittelt → gleicht Sonnen-/Gegenrichtung aus).
+    """Himmel-Klarheits-Index 0..100 aus NUR echten Himmels-Pixeln des oberen
+    Bildbands (volle 360°-Breite → gleicht Sonnen-/Gegenrichtung aus).
     Sattes Blau (Rayleigh, klare Luft) → hoch; grau/weiss (Mie-Luftlicht durch
-    Dunst/Nebel) → tief. Median gegen einzelne Gipfel/Wolken im Band robust.
+    Dunst/Nebel) → tief.
 
-    ZWEITES, unabhängiges Signal neben der Landmarken-Sicht: misst den
-    atmosphärischen Dunst-Zustand, nicht km. Verwechselt hohe Bewölkung mit Dunst
-    (grauer Himmel) — das löst erst die Kombination mit den Landmarken auf.
+    OBJEKTE (Wald/Berg/Gebäude) vor dem Himmel werden ausmaskiert: ein Pixel gilt
+    als Himmel, wenn es hell + glatt (geringe Textur) + nicht-grün/nicht-erdfarben
+    ist; zusätzlich nur der von oben ZUSAMMENHÄNGENDE Himmel je Spalte (bis zur
+    Skyline) — so fallen Gipfel/Wald/Dächer unter der Skyline weg. `frac` in den
+    Metriken zeigt den erkannten Himmel-Anteil (Reliabilität).
+
+    ZWEITES, unabhängiges Signal neben der Landmarken-Sicht: misst den Dunst-
+    Zustand, nicht km; verwechselt hohe Bewölkung mit Dunst — das löst erst die
+    Kombination mit den Landmarken auf.
     Rückgabe: (index|None, metrics). None bei zu dunkel (Nacht/Dämmerung)."""
     h, w, _ = rgb.shape
-    band = rgb[0:max(1, int(h * 0.30)), :, :]          # oberes 30% = Himmel
-    r = float(np.median(band[:, :, 0]))
-    g = float(np.median(band[:, :, 1]))
-    b = float(np.median(band[:, :, 2]))
-    mx, mn = max(r, g, b), min(r, g, b)
+    band = rgb[0:max(2, int(h * 0.40)), :, :]          # oberes 40% als Suchraum
+    R, G, B = band[:, :, 0], band[:, :, 1], band[:, :, 2]
+    V = band.max(axis=2)                               # Helligkeit
+    mn = band.min(axis=2)
+    lum = band @ _LUMA
+    gy, gx = np.gradient(lum)
+    grad = np.abs(gx) + np.abs(gy)                     # lokale Textur
+
+    # Himmels-Pixel: hell + glatt + nicht Vegetation (grün) + nicht erdfarben (rot-dominant)
+    sky_px = (V > 55) & (grad < 8.0) \
+        & ~((G >= R) & (G >= B) & ((G - mn) > 10)) \
+        & (B >= R - 30)
+    # Nur der von OBEN zusammenhängende Himmel je Spalte (bis zur ersten Skyline-Kante).
+    contig = np.cumprod(sky_px.astype(np.uint8), axis=0).astype(bool)
+    frac = float(contig.mean())
+
+    if frac >= 0.03:
+        sel = contig
+        r = float(np.median(R[sel])); g = float(np.median(G[sel])); b = float(np.median(B[sel]))
+    else:  # kaum Himmel erkannt → Band-Median als Fallback (Wert unsicher, frac klein)
+        r = float(np.median(R)); g = float(np.median(G)); b = float(np.median(B))
+
+    mx, mnv = max(r, g, b), min(r, g, b)
     bright = mx / 255.0
     if bright < 0.12:                                  # zu dunkel → keine Aussage
-        return None, {"sat": 0.0, "blue": 0.0, "bright": round(bright, 3)}
-    sat = (mx - mn) / mx if mx > 0 else 0.0            # HSV-Sättigung 0..1
+        return None, {"sat": 0.0, "blue": 0.0, "bright": round(bright, 3), "frac": round(frac, 3)}
+    sat = (mx - mnv) / mx if mx > 0 else 0.0           # HSV-Sättigung 0..1
     blue = max(0.0, (b - r)) / 255.0                   # Blau-Überschuss 0..1
     idx = int(round(100.0 * min(1.0, 0.6 * sat + 1.4 * blue)))  # provisorisch, zu kalibrieren
-    return idx, {"sat": round(sat, 3), "blue": round(blue, 3), "bright": round(bright, 3)}
+    return idx, {"sat": round(sat, 3), "blue": round(blue, 3),
+                 "bright": round(bright, 3), "frac": round(frac, 3)}
 
 
 def _pix(gray: np.ndarray, xf: float, yf: float):
@@ -358,8 +383,9 @@ def main() -> int:
                  (str(sky) if sky is not None else "—"), obs["quality"])
         if args.dry_run and obs.get("sky_metrics"):
             m = obs["sky_metrics"]
-            log.info("      Himmel: Klarheit=%s  sat=%.3f blue=%.3f bright=%.3f",
-                     (sky if sky is not None else "—"), m.get("sat", 0), m.get("blue", 0), m.get("bright", 0))
+            log.info("      Himmel: Klarheit=%s  sat=%.3f blue=%.3f bright=%.3f  Himmel-Anteil=%.0f%%",
+                     (sky if sky is not None else "—"), m.get("sat", 0), m.get("blue", 0),
+                     m.get("bright", 0), 100 * m.get("frac", 0))
         if args.dry_run:
             for d in obs["detail"]:
                 flag = ("✓M" if d.get("mono") else "✓ ") if d["visible"] else "· "
