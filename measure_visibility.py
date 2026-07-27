@@ -49,7 +49,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import requests
@@ -119,6 +119,16 @@ def download_image(url: str):
             observed_at = datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
         except ValueError:
             observed_at = None
+        # Roundshot-URLs tragen LOKALE Kamerazeit (CET/CEST), nicht UTC. Als UTC
+        # gelesen läge der Zeitstempel in der Zukunft (bis +2 h). Selbstkorrigierend:
+        # liegt er mehr als 10 min vor jetzt, um den Offset zurückschieben — gilt
+        # für Sommer- wie Winterzeit, ohne tzdata-Abhängigkeit.
+        if observed_at is not None:
+            now = datetime.now(timezone.utc)
+            ahead = (observed_at - now).total_seconds()
+            if ahead > 600:
+                shift = round(ahead / 3600.0)          # 1 h (CET) oder 2 h (CEST)
+                observed_at = observed_at - timedelta(hours=shift)
     img = Image.open(io.BytesIO(r.content)).convert("RGB")
     return np.asarray(img, dtype=np.float32), observed_at
 
